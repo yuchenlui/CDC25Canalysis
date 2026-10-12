@@ -1,28 +1,31 @@
 # CDC25C Pan-Cancer Analysis
 
-CDC25C 单基因泛癌全流程分析（单文件 R 脚本）：表达差异 → 预后（OS/DSS/DFI/PFI）→ TMB/MSI → 免疫微环境（ESTIMATE / CIBERSORT / TIMER2 / 免疫功能）→ Hallmark GSVA → 基因相关 / GSEA → 药敏（pRRophetic）→ IMvigor210 免疫治疗响应。
+Single-file R pipeline for single-gene pan-cancer analysis of CDC25C: differential expression -> survival (OS/DSS/DFI/PFI) -> TMB/MSI -> immune microenvironment (ESTIMATE / CIBERSORT / TIMER2 / immune functions) -> Hallmark GSVA -> gene correlations / GSEA -> drug sensitivity (pRRophetic) -> IMvigor210 immunotherapy response.
 
-## 使用
+## Usage
 
 ```bash
 Rscript CDC25C.pancancer.analysis.R
 ```
 
-在包含各参考数据目录的项目根下执行（见脚本头部注释）。
+Run from the project root that contains the per-step reference directories (see the script header).
 
-## 数据下载
+## Data download
 
-唯一表达量输入（约 9.5 GB）：UCSC Xena Toil Recomputed 泛癌 TPM 大表
+Expression input (single source, ~9.5 GB): UCSC Xena Toil Recomputed pan-cancer TPM matrix
 
-- 下载页面：<https://xenabrowser.net/datapages/?cohort=TCGA%20Target-GTEx>
-- 选择 dataset：`TcgaTargetGtex_rsem_gene_tpm`（Hugo symbol 版本，文件名 `TcgaTargetGtex_rsem_gene_tpm.symbol.tsv`）
-- 放置到 `data/TcgaTargetGtex_rsem_gene_tpm.symbol.tsv`
+- Download page: <https://xenabrowser.net/datapages/?cohort=TCGA%20Target-GTEx>
+- Dataset: `TcgaTargetGtex_rsem_gene_tpm` (Hugo symbol version, file name `TcgaTargetGtex_rsem_gene_tpm.symbol.tsv`)
+- Place at `data/TcgaTargetGtex_rsem_gene_tpm.symbol.tsv`
 
-脚本自动从该大表完成：
-1. `data/CDC25C.tpm.denseDataOnlyDownload.tsv`（表达差异分析输入，含 TCGA/GTEx、样本类型注释）
-2. `data/CDC25CexprTime.txt`（预后及下游各模块输入，仅 TCGA 样本）
+The script derives from this matrix:
 
-## 输入数据布局
+1. `data/CDC25C.tpm.denseDataOnlyDownload.tsv` (input to differential expression; TCGA/GTEx samples with sample-type annotation)
+2. `data/CDC25CexprTime.txt` (expression input to steps 08-29, TCGA samples only)
+
+Survival data (OS/DSS/DFI/PFI) is not derived from the expression matrix. It is downloaded from UCSC Xena as `07.preSurvival/TCGA-<CANCER>.survival.tsv` and merged with expression by sample at runtime for steps 08-12.
+
+## Input layout
 
 ```
 <data root>/
@@ -33,12 +36,12 @@ Rscript CDC25C.pancancer.analysis.R
 └── 33.IMvigor210/IMvigor210/
 ```
 
-## 输出
+## Output
 
-- 各步骤结果：`<步骤目录>/<输出目录>/`
-- 汇总副本：`report/CDC25C/`
+- Per-step results: `<step dir>/<output dir>/`
+- Collected copy: `report/CDC25C/`
 
-## 说明
+## Notes
 
-- 表达口径为 Toil `log2(TPM+1)`；高低分组按中位数，与 FPKM 口径分组等价
-- 步骤逐个 `tryCatch`：单步失败记录后继续，不中断整体流程
+- Expression is Toil `log2(TPM+1)`; High/Low groups are split at the median, equivalent to the FPKM-based grouping
+- Each step runs inside `tryCatch`; a failed step is logged and the pipeline continues

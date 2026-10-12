@@ -1,28 +1,29 @@
 #!/usr/bin/env Rscript
 # =====================================================================
-# CDC25C.pancancer.analysis.R —— CDC25C 单基因泛癌全流程分析（单文件）
+# CDC25C.pancancer.analysis.R - CDC25C single-gene pan-cancer pipeline (single file)
 # 2026-10-12
 #
-# 【数据来源】唯一表达量输入（约 9.5 GB）：
-#   UCSC Xena Toil Recomputed 泛癌 TPM 大表
-#   下载页面：https://xenabrowser.net/datapages/?cohort=TCGA%20Target-GTEx
-#   选择 dataset "TcgaTargetGtex_rsem_gene_tpm"（Hugo symbol 版本，
-#   文件名 TcgaTargetGtex_rsem_gene_tpm.symbol.tsv）
-#   放到项目根 data/ 下：data/TcgaTargetGtex_rsem_gene_tpm.symbol.tsv
+# [Data] Expression input, single source (~9.5 GB):
+#   UCSC Xena Toil Recomputed pan-cancer TPM matrix
+#   Download page: https://xenabrowser.net/datapages/?cohort=TCGA%20Target-GTEx
+#   dataset "TcgaTargetGtex_rsem_gene_tpm" (Hugo symbol version,
+#   file name TcgaTargetGtex_rsem_gene_tpm.symbol.tsv)
+#   place at data/TcgaTargetGtex_rsem_gene_tpm.symbol.tsv under the project root
 #
-# 【其余输入】各步骤参考数据（项目自带目录）：
-#   07.preSurvival/（08-12 生存）、13.cliCor/ 15.TMBcor/ 17.MSIcor/ 20.estimateCor/
-#   21.CIBERSORT/ 23.geneCor/ 25.GSEA/ database/、29.../symbol.txt（药敏表达矩阵）、
-#   33.IMvigor210/IMvigor210/（免疫治疗队列）
+# [Other inputs] per-step reference data (bundled directories):
+#   07.preSurvival/ (Xena TCGA survival data, steps 08-12),13.cliCor/ 15.TMBcor/ 17.MSIcor/ 20.estimateCor/
+#   21.CIBERSORT/ 23.geneCor/ 25.GSEA/ database/, 29.../symbol.txt (expression matrix for drug sensitivity),
+#   33.IMvigor210/IMvigor210/ (immunotherapy cohort)
 #
-# 【输出】
-#   data/CDC25C.tpm.denseDataOnlyDownload.tsv（06.diff 输入）
-#   data/CDC25CexprTime.txt（08-29 步输入，仅 TCGA 样本）
-#   <步骤目录>/<输出目录>/ 各步骤结果；report/CDC25C/ 汇总
+# [Output]
+#   data/CDC25C.tpm.denseDataOnlyDownload.tsv (input to 06.diff)
+#   data/CDC25CexprTime.txt (expression input to steps 08-29, TCGA samples only)
+#   <step dir>/<output dir>/ per-step results; report/CDC25C/ collected copy
 #
-# 【用法】项目根目录：Rscript CDC25C.pancancer.analysis.R
-# 【说明】表达口径 log2(TPM+1)（Toil）；高低分组按中位数，与 FPKM 口径等价；
-#         步骤逐个 tryCatch，单步失败不中断整体流程
+# [Usage] from the project root: Rscript CDC25C.pancancer.analysis.R
+# [Notes] Expression scale: log2(TPM+1) (Toil); High/Low split at the median,
+#         equivalent to the FPKM-based grouping; each step runs in tryCatch,
+#         a failed step is logged and does not stop the pipeline
 # =====================================================================
 
 suppressPackageStartupMessages({
@@ -31,14 +32,14 @@ suppressPackageStartupMessages({
              "reshape2", "tidyr", "scales", "openxlsx")
   .miss <- .pkgs[!vapply(.pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(.miss)) {
-    message("安装缺失 CRAN 包: ", paste(.miss, collapse = ", "))
+    message("installing missing CRAN packages: ", paste(.miss, collapse = ", "))
     try(install.packages(.miss, repos = "https://mirrors.tuna.tsinghua.edu.cn/CRAN/"), silent = TRUE)
   }
   .bioc <- c("org.Hs.eg.db", "clusterProfiler", "limma", "edgeR", "GSVA", "ggplotify",
              "GSEABase", "fgsea", "enrichplot", "DOSE", "preprocessCore", "survcomp")
   .miss2 <- .bioc[!vapply(.bioc, requireNamespace, logical(1), quietly = TRUE)]
   if (length(.miss2)) {
-    message("安装缺失 Bioconductor 包: ", paste(.miss2, collapse = ", "))
+    message("installing missing Bioconductor packages: ", paste(.miss2, collapse = ", "))
     try({
       if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
       BiocManager::install(.miss2, ask = FALSE, update = FALSE)
@@ -46,7 +47,7 @@ suppressPackageStartupMessages({
   }
 })
 
-# ------------------------------ 全局参数 ------------------------------
+# ------------------------------ global parameters ------------------------------
 gene <- "CDC25C"
 ParentWD <- normalizePath(".")
 cohort_focus <- c("PAAD", "COAD", "LIHC", "STAD")
@@ -56,7 +57,7 @@ assign("significant_cohort", c(), envir = globalenv())
 
 
 # =====================================================================
-# 1. 表达量提取（唯一来源：Toil 大表）
+# 1. Expression extraction (single source: Toil matrix)
 # =====================================================================
 dataDir <- file.path(ParentWD, "data")
 toil_big <- file.path(dataDir, "TcgaTargetGtex_rsem_gene_tpm.symbol.tsv")
@@ -79,24 +80,24 @@ scan_genes <- function(path, want, chunk = 400L) {
       i <- match(want[k], gn)
       if (!is.na(i)) {
         v <- strsplit(ln[i], "\t", fixed = TRUE)[[1]][-1L]
-        if (length(v) != ns) stop("列数不一致: ", basename(path))
+        if (length(v) != ns) stop("column count mismatch: ", basename(path))
         mat[, k] <- as.numeric(v); found[k] <- TRUE
       }
     }
-    if (nb %% 20000L == 0L) message("    已扫描 ", nb, " 行 ...")
+    if (nb %% 20000L == 0L) message("    scanned ", nb, " lines ...")
     if (all(found)) break
   }
-  if (any(!found)) stop("大表中未找到基因: ", paste(want[!found], collapse = ","))
+  if (any(!found)) stop("gene(s) not found in the matrix: ", paste(want[!found], collapse = ","))
   list(samples = samples, mat = mat)
 }
 
-message("[提取] 扫描 Toil 大表（约 10 GB，数分钟）...")
+message("[extract] scanning Toil matrix (~10 GB, takes a few minutes) ...")
 toil <- scan_genes(toil_big, gene)
 sid <- toil$samples
 val <- toil$mat[, gene]        # log2(TPM+1)
 
-## ---- Part A：Xena denseDataOnlyDownload 等价格式（06.diff 输入） ----
-val_xena <- round(log2(pmax(2^val - 0.99, 1e-9)), 3)   # 转 log2(TPM+0.01) 口径
+## ---- Part A: Xena denseDataOnlyDownload-equivalent format (input to 06.diff) ----
+val_xena <- round(log2(pmax(2^val - 0.99, 1e-9)), 3)   # to log2(TPM+0.01) scale
 study <- ifelse(grepl("^TCGA", sid), "TCGA", ifelse(grepl("^GTEX", sid), "GTEX", "OTHER"))
 tc <- suppressWarnings(as.integer(substr(sid, 14L, 15L)))
 stype <- ifelse(study == "GTEX", "Normal Tissue",
@@ -109,9 +110,9 @@ fwrite(data.table(sample = sid, samples = sid, setNames(list(val_xena), gene),
                   `_sample_type` = stype, `_study` = study),
        file.path(dataDir, paste0(gene, ".tpm.denseDataOnlyDownload.tsv")),
        sep = "\t", quote = FALSE)
-message("[提取] Part A 完成 -> data/", gene, ".tpm.denseDataOnlyDownload.tsv")
+message("[extract] Part A done -> data/", gene, ".tpm.denseDataOnlyDownload.tsv")
 
-## ---- Part B：exprTime（仅 TCGA 样本，08-29 步输入） ----
+## ---- Part B: exprTime (TCGA samples only, input to steps 08-29) ----
 is_tcga <- grepl("^TCGA", sid)
 tsid <- sid[is_tcga]; tval <- val[is_tcga]
 cancer <- vapply(strsplit(tsid, "-"), function(x) if (length(x) >= 2L) x[2] else NA_character_, character(1))
@@ -121,21 +122,21 @@ ok <- !is.na(cancer) & nzchar(cancer)
 fwrite(data.table(ID = tsid[ok], Type = ttype[ok], cancer_type = cancer[ok],
                   setNames(list(tval[ok]), gene)),
        file.path(dataDir, paste0(gene, "exprTime.txt")), sep = ",", quote = FALSE)
-message("[提取] Part B 完成 -> data/", gene, "exprTime.txt（", sum(ok), " 个 TCGA 样本，",
-        length(unique(cancer[ok])), " 个癌种）")
+message("[extract] Part B done -> data/", gene, "exprTime.txt (", sum(ok), " TCGA samples, ",
+        length(unique(cancer[ok])), " cancer types)")
 
 # =====================================================================
-# 2. 结果汇总
+# 2. Report collection
 # =====================================================================
 cp_report <- function(dir) {
   from <- file.path(ParentWD, dir)
   to <- file.path(ParentWD, "report", gene)
   if (!dir.exists(to)) dir.create(to, recursive = TRUE, showWarnings = FALSE)
-  if (!dir.exists(from)) { warning("[report] 输出目录不存在，跳过：", from); return(invisible(FALSE)) }
+  if (!dir.exists(from)) { warning("[report] directory not found, skipped: ", from); return(invisible(FALSE)) }
   invisible(file.copy(from, to, recursive = TRUE, copy.date = TRUE))
 }
 
-# 步骤执行器：setwd 到 <步骤目录>/<输出目录>，逐段 eval 步骤代码
+# Step runner: setwd to <step dir>/<output dir>, then eval the inlined step code
 run_step <- function(step_dir, outdir, codes) {
   odir <- file.path(ParentWD, step_dir, outdir)
   if (!dir.exists(odir)) dir.create(odir, recursive = TRUE, showWarnings = FALSE)
@@ -145,16 +146,15 @@ run_step <- function(step_dir, outdir, codes) {
 }
 
 # =====================================================================
-# 3. 泛癌分析步骤（各步骤脚本代码原文内联；函数体在 <步骤目录>/<输出目录> 内执行）
+# 3. Analysis steps (inlined from each step script; executed inside <step dir>/<output dir>)
 # =====================================================================
 
 step_06_diff <- function() {
   outdir <- paste0("1.", gene, ".diff.boxplot")
-  message("[step_06_diff] 开始 ...")
+  message("[step_06_diff] start")
   setwd(file.path(ParentWD, "06.diff"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 06.diff/diff.R ----
 
   library(dplyr)
 
@@ -183,7 +183,7 @@ step_06_diff <- function() {
   dat[,5]=round(log2(2^dat[,5]-0.01+1),3)
   dat=dat[which(dat$X_sample_type!="Solid Tissue Normal"),]
   library(ggpubr)
-  p=ggboxplot(dat, #环境中的dat作为绘图数据
+  p=ggboxplot(dat, # 'dat' from the environment as plot data
               x="cancer_type", y=gene, color = "sample_type", 
               ylab=paste0(gene," expression"),xlab="",
               palette = c("#244B9E", "firebrick"),ggtheme = theme_bw())+rotate_x_text(60)+stat_compare_means(aes(group=sample_type),
@@ -196,7 +196,6 @@ step_06_diff <- function() {
   dev.off()
 
   unlink("csv", recursive=TRUE)
-  # ---- 内联自 06.diff/stage.diff.R ----
 
 
   if(!dir.exists("stage")){ dir.create(paste0("stage"))
@@ -259,7 +258,6 @@ step_06_diff <- function() {
     dev.off()
   }
   setwd("..")
-  # ---- 内联自 06.diff/pair_boxplot.R ----
 
 
   library(ggpubr)
@@ -321,8 +319,8 @@ step_06_diff <- function() {
                   line.color = "black", line.size = 0.4,
                   ylab = paste0(gene," expression level [log(TPM+1)]"))+
     scale_fill_manual(values = c(
-      scales::alpha("#244B9E", 0.8), # 设置透明度 50%
-      scales::alpha("firebrick", 0.8)  # 设置透明度 50%
+      scales::alpha("#244B9E", 0.8), # alpha 0.8
+      scales::alpha("firebrick", 0.8)  # alpha 0.8
     ))+
     stat_compare_means(paired = TRUE,method = "t.test",label="p.signif",label.x = 1.5)+theme(legend.position = "none",axis.title.x = element_blank())
   Sys.sleep(1)
@@ -339,16 +337,15 @@ step_06_diff <- function() {
   setwd("..")
   setwd(ParentWD)
   cp_report(file.path("06.diff", outdir))
-  message("[step_06_diff] 完成")
+  message("[step_06_diff] done")
 }
 
 step_08_survival <- function() {
   outdir <- paste0("2.", gene, ".survivalplot")
-  message("[step_08_survival] 开始 ...")
+  message("[step_08_survival] start")
   setwd(file.path(ParentWD, "08.survival"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 08.survival/panCancer08.survival_for_sale.R ----
 
 
   library(limma)
@@ -464,16 +461,15 @@ step_08_survival <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("08.survival", outdir))
-  message("[step_08_survival] 完成")
+  message("[step_08_survival] done")
 }
 
 step_09_cox_os <- function() {
   outdir <- paste0("cox.", gene, ".OS.univariate_cox_forest_plot")
-  message("[step_09_cox_os] 开始 ...")
+  message("[step_09_cox_os] start")
   setwd(file.path(ParentWD, "09.cox"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 09.cox/panCancer09.cox_for_sale.R ----
 
 
   library(dplyr)
@@ -526,12 +522,12 @@ step_09_cox_os <- function() {
   	coxSummary = summary(cox)
     coxP=coxSummary$coefficients[,"Pr(>|z|)"]
 
-    #导出数据方便处理
+    # export for downstream processing
     HR=coxSummary$conf.int[,"exp(coef)"]
     HR.95L=confint(cox)[,'2.5 %']
     HR.95H=confint(cox)[,'97.5 %']
 
-    #处理数据免得出界太多
+    # clip values to keep points within the axis range
     if(HR > 5){
         HR = 5/(1+exp(-HR))
       if(HR.95L < 0){
@@ -642,29 +638,28 @@ step_09_cox_os <- function() {
   bioForest(coxFile=paste0(gene,".OS.cox.result.txt"),forestFile=paste0(gene,".OS.forest.pdf"),forestCol="#e10b2b")
   setwd(ParentWD)
   cp_report(file.path("09.cox", outdir))
-  message("[step_09_cox_os] 完成")
+  message("[step_09_cox_os] done")
 }
 
 step_10_cox_dss <- function() {
   outdir <- paste0("DSS.", gene, ".DSS.univariate_cox_forest_plot")
-  message("[step_10_cox_dss] 开始 ...")
+  message("[step_10_cox_dss] start")
   setwd(file.path(ParentWD, "10.DSS"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 10.DSS/panCancer10.DSS_for_sale.R ----
   library(limma)
   library(survival)
   library(survminer)
   library(forestplot)
-  # 定义上下限边界
+  # lower/upper limits
   min_limit = 0.001
   max_limit = 10
-  # 数学平滑函数：压缩极端值并限制范围
+  # squash extreme values into a bounded range
   transform_value <- function(x, min_limit, max_limit) {
     if(x<max_limit & x>min_limit){return(x)}
-    # 对数变换后使用 Sigmoid 函数映射到合理区间
-    scaled_value <- 1 / (1 + exp(-log(x)))  # Sigmoid 平滑
-    # 将值映射到 [min_limit, max_limit] 范围
+    # map to a bounded interval: sigmoid on the log scale
+    scaled_value <- 1 / (1 + exp(-log(x)))  # sigmoid
+    # map values to [min_limit, max_limit]
     result <- min_limit + (max_limit - min_limit) * scaled_value
     return(result)
   }
@@ -732,12 +727,12 @@ step_10_cox_dss <- function() {
   	cox=coxph(Surv(futime, fustat) ~ gene, data = rt1)
   	coxSummary = summary(cox)
   	coxP=coxSummary$coefficients[,"Pr(>|z|)"]
-  	#导出数据方便处理
+  	# export for downstream processing
   	HR=coxSummary$conf.int[,"exp(coef)"]
   	HR.95L=confint(cox)[,'2.5 %']
   	HR.95H=confint(cox)[,'97.5 %']
 
-  	#处理数据免得出界太多
+  	# clip values to keep points within the axis range
   	if(HR > 5){
   	  HR = 5/(1+exp(-HR))
   	  if(HR.95L < 0){
@@ -828,7 +823,7 @@ step_10_cox_dss <- function() {
 
 
 
-  #循环结束
+  # end of loop
 
   outTab$pvalue=as.numeric(as.character(outTab$pvalue))
   outTab1=arrange(outTab,pvalue)
@@ -870,16 +865,15 @@ step_10_cox_dss <- function() {
   bioForest(coxFile=paste0(gene,".DSS.cox.result.txt"),forestFile=paste0(gene,".DSS.forest.pdf"),forestCol="red")
   setwd(ParentWD)
   cp_report(file.path("10.DSS", outdir))
-  message("[step_10_cox_dss] 完成")
+  message("[step_10_cox_dss] done")
 }
 
 step_11_cox_dfi <- function() {
   outdir <- paste0("DFI.", gene, ".DFI.univariate_cox_forest_plot")
-  message("[step_11_cox_dfi] 开始 ...")
+  message("[step_11_cox_dfi] start")
   setwd(file.path(ParentWD, "11.DFI"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 11.DFI/panCancer11.DFI_for_sale.R ----
   library(limma)
   library(survival)
   library(survminer)
@@ -982,12 +976,12 @@ step_11_cox_dfi <- function() {
   	cox=coxph(Surv(futime, fustat) ~ gene, data = rt1)
   	coxSummary = summary(cox)
       coxP=coxSummary$coefficients[,"Pr(>|z|)"]
-      #导出数据方便处理
+      # export for downstream processing
       HR=coxSummary$conf.int[,"exp(coef)"]
       HR.95L=confint(cox)[,'2.5 %']
       HR.95H=confint(cox)[,'97.5 %']
 
-      #处理数据免得出界太多
+      # clip values to keep points within the axis range
       if(HR > 5){
         HR = 5/(1+exp(-HR))
         if(HR.95L < 0){
@@ -1093,16 +1087,15 @@ step_11_cox_dfi <- function() {
   bioForest(coxFile=paste0(gene,".DFI.cox.result.txt"),forestFile=paste0(gene,".DFI.forest.pdf"),forestCol="#ff6f00")
   setwd(ParentWD)
   cp_report(file.path("11.DFI", outdir))
-  message("[step_11_cox_dfi] 完成")
+  message("[step_11_cox_dfi] done")
 }
 
 step_12_cox_pfi <- function() {
   outdir <- paste0("PFI.", gene, ".PFI.univariate_cox_forest_plot")
-  message("[step_12_cox_pfi] 开始 ...")
+  message("[step_12_cox_pfi] start")
   setwd(file.path(ParentWD, "12.PFI"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 12.PFI/panCancer12.PFI_for_sale.R ----
 
   library(limma)
   library(survival)
@@ -1202,12 +1195,12 @@ step_12_cox_pfi <- function() {
   	cox=coxph(Surv(futime, fustat) ~ gene, data = rt1)
   	coxSummary = summary(cox)
       coxP=coxSummary$coefficients[,"Pr(>|z|)"]
-      #导出数据方便处理
+      # export for downstream processing
       HR=coxSummary$conf.int[,"exp(coef)"]
       HR.95L=confint(cox)[,'2.5 %']
       HR.95H=confint(cox)[,'97.5 %']
 
-      #处理数据免得出界太多
+      # clip values to keep points within the axis range
       if(HR > 5){
         HR = 5/(1+exp(-HR))
         if(HR.95L < 0){
@@ -1311,16 +1304,15 @@ step_12_cox_pfi <- function() {
   bioForest(coxFile=paste0(gene,".PFI.cox.result.txt"),forestFile=paste0(gene,".PFI.forest.pdf"),forestCol="#2f9e44")
   setwd(ParentWD)
   cp_report(file.path("12.PFI", outdir))
-  message("[step_12_cox_pfi] 完成")
+  message("[step_12_cox_pfi] done")
 }
 
 step_16_tmb_radar <- function() {
   outdir <- paste0("TMBradar.", gene, ".TMB.radarplot")
-  message("[step_16_tmb_radar] 开始 ...")
+  message("[step_16_tmb_radar] start")
   setwd(file.path(ParentWD, "16.TMBradar"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 16.TMBradar/panCancer16.TMBradar.R ----
 
 
   exp=read.table(paste0(ParentWD,"/data/",gene,"exprTime.txt"),sep=",",header = T)
@@ -1385,16 +1377,15 @@ step_16_tmb_radar <- function() {
   dev.off()
   setwd(ParentWD)
   cp_report(file.path("16.TMBradar", outdir))
-  message("[step_16_tmb_radar] 完成")
+  message("[step_16_tmb_radar] done")
 }
 
 step_18_msi_radar <- function() {
   outdir <- paste0("MSIradar.", gene, ".MSI.radarplot")
-  message("[step_18_msi_radar] 开始 ...")
+  message("[step_18_msi_radar] start")
   setwd(file.path(ParentWD, "18.MSIradar"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 18.MSIradar/panCancer18.MSIradar.R ----
 
   exp=read.table(paste0(ParentWD,"/data/",gene,"exprTime.txt"),sep=",",header = T)
   colnames(exp)[1]="samples"
@@ -1458,16 +1449,15 @@ step_18_msi_radar <- function() {
   dev.off()
   setwd(ParentWD)
   cp_report(file.path("18.MSIradar", outdir))
-  message("[step_18_msi_radar] 完成")
+  message("[step_18_msi_radar] done")
 }
 
 step_20_estimate <- function() {
   outdir <- paste0("9.", gene, ".Estimate.Score.corplot")
-  message("[step_20_estimate] 开始 ...")
+  message("[step_20_estimate] start")
   setwd(file.path(ParentWD, "20.estimateCor"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 20.estimateCor/panCancer20.estimateCor.R ----
 
   library(ggplot2)
   library(ggpubr)
@@ -1528,16 +1518,15 @@ step_20_estimate <- function() {
   write.table(outTab,file=paste0(gene,".estimateCor.result.txt"),sep="\t",row.names=F,quote=F)
   setwd(ParentWD)
   cp_report(file.path("20.estimateCor", outdir))
-  message("[step_20_estimate] 完成")
+  message("[step_20_estimate] done")
 }
 
 step_21_cibersort <- function() {
   outdir <- paste0("x10.", gene, ".Cibersort.statplots")
-  message("[step_21_cibersort] 开始 ...")
+  message("[step_21_cibersort] start")
   setwd(file.path(ParentWD, "21.CIBERSORT"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 21.CIBERSORT/TMBimmune20.barplot.R ----
 
 
   library(ggpubr)
@@ -1617,16 +1606,15 @@ step_21_cibersort <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("21.CIBERSORT", outdir))
-  message("[step_21_cibersort] 完成")
+  message("[step_21_cibersort] done")
 }
 
 step_22_cibersort_cor <- function() {
   outdir <- paste0("x11.", gene, ".Cibersort.Corr")
-  message("[step_22_cibersort_cor] 开始 ...")
+  message("[step_22_cibersort_cor] start")
   setwd(file.path(ParentWD, "22.CIBERSORTcor"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 22.CIBERSORTcor/panCancer22.CIBERSORTcor.R ----
 
   library(ggplot2)
   library(ggpubr)
@@ -1686,16 +1674,15 @@ step_22_cibersort_cor <- function() {
   write.table(outTab,file=paste0(gene,".CIBERSORTcor.result.txt"),sep="\t",row.names=F,quote=F)
   setwd(ParentWD)
   cp_report(file.path("22.CIBERSORTcor", outdir))
-  message("[step_22_cibersort_cor] 完成")
+  message("[step_22_cibersort_cor] done")
 }
 
 step_26_immunefunction <- function() {
   outdir <- paste0("x26.", gene, ".immunefunction")
-  message("[step_26_immunefunction] 开始 ...")
+  message("[step_26_immunefunction] start")
   setwd(file.path(ParentWD, "26.immunefunction"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 26.immunefunction/Pancancer26.1.immuneGSVA.paint.corr.R ----
 
   #grouplist: sample*group
   #x: Cohort  sample*gene(or risk)
@@ -1703,8 +1690,8 @@ step_26_immunefunction <- function() {
   library(limma)
   library(ggpubr)
   ScoreFile="immune.GSVA.pancancer.txt"
-  ScoreType=gsub("\\.GSVA.*txt$","",ScoreFile)#提取分析的类型
-  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      #输入
+  ScoreType=gsub("\\.GSVA.*txt$","",ScoreFile)# analysis type label
+  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      # input
   #Patient  Cohort
   exp=read.table(paste0(ParentWD,"/data/",gene,"exprTime.txt"),sep=",",header = T,row.names = 1)
   PaintScore=gene
@@ -1745,7 +1732,7 @@ step_26_immunefunction <- function() {
   return(list_data)
   } 
 
-  heatmapData=GSVARelationship(exp,Score)#x即PaintScore y 即各种分数
+  heatmapData=GSVARelationship(exp,Score)# x: PaintScore (expression), y: pathway/cell-type scores
   hmpvalue <- as.data.frame(heatmapData$pvalue) 
   hmdata <- as.data.frame(heatmapData$value)  
 
@@ -1823,16 +1810,15 @@ step_26_immunefunction <- function() {
   GSVADeplot(exp,Score)
   setwd(ParentWD)
   cp_report(file.path("26.immunefunction", outdir))
-  message("[step_26_immunefunction] 完成")
+  message("[step_26_immunefunction] done")
 }
 
 step_27_timer2 <- function() {
   outdir <- paste0("x27.", gene, ".timer2infiltration")
-  message("[step_27_timer2] 开始 ...")
+  message("[step_27_timer2] start")
   setwd(file.path(ParentWD, "27.infiltration"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 27.infiltration/Pancancer27.Timer2infiltration.paint.corr.R ----
 
   #grouplist: sample*group
   #x: Cohort  sample*gene(or risk)
@@ -1927,12 +1913,12 @@ step_27_timer2 <- function() {
   myfiles=c("pancancer_Bcell_timer2.txt","pancancer_Tcellcd4_timer2.txt","pancancer_Tcellcd8_timer2.txt","pancancer_Tcellreg_timer2.txt","pancancer_Macrophage_timer2.txt","pancancer_fibroblast_timer2.txt","pancancer_score_timer2.txt")
   for( mf in myfiles){
   ScoreFile=mf
-  ScoreType=stringr::str_match(ScoreFile,"pancancer_(.*)_timer2.*")[2]#提取分析的类型
+  ScoreType=stringr::str_match(ScoreFile,"pancancer_(.*)_timer2.*")[2]# analysis type label
   dir.create(ScoreType)
   setwd(ScoreType)
-  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      #输入
+  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      # input
   #Patient  Cohort
-  heatmapData=GSVARelationship(exp,Score)#x即PaintScore y 即各种分数
+  heatmapData=GSVARelationship(exp,Score)# x: PaintScore (expression), y: pathway/cell-type scores
   hmpvalue <- as.data.frame(heatmapData$pvalue) 
   hmdata <- as.data.frame(heatmapData$value)  
 
@@ -1974,16 +1960,15 @@ step_27_timer2 <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("27.infiltration", outdir))
-  message("[step_27_timer2] 完成")
+  message("[step_27_timer2] done")
 }
 
 step_28_hallmark_gsva <- function() {
   outdir <- paste0("x28.", gene, ".HallmarkGSVA")
-  message("[step_28_hallmark_gsva] 开始 ...")
+  message("[step_28_hallmark_gsva] start")
   setwd(file.path(ParentWD, "28.HallmarkGSVA"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 28.HallmarkGSVA/Pancancer28.HallmarkGSVA.paint.corr_for_sale.R ----
 
   #grouplist: sample*group
   #x: Cohort  sample*gene(or risk)
@@ -1997,8 +1982,8 @@ step_28_hallmark_gsva <- function() {
   options(stringsAsFactors = F)
 
   ScoreFile="hallmark.GSVA.pancancer.txt"
-  ScoreType=gsub("\\.GSVA.*txt$","",ScoreFile)#提取分析的类型
-  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      #输入
+  ScoreType=gsub("\\.GSVA.*txt$","",ScoreFile)# analysis type label
+  Score=read.table(paste0(ParentWD,"/database/",ScoreFile),sep="\t",header = T,row.names = 1)      # input
   #Patient  Cohort
   exp=read.table(paste0(ParentWD,"/data/",gene,"exprTime.txt"),sep=",",header = T,row.names = 1)
   PaintScore=gene
@@ -2039,7 +2024,7 @@ step_28_hallmark_gsva <- function() {
   return(list_data)
   } 
 
-  heatmapData=GSVARelationship(exp,Score,Tumors="ALL")#x即PaintScore y 即各种分数
+  heatmapData=GSVARelationship(exp,Score,Tumors="ALL")# x: PaintScore (expression), y: pathway/cell-type scores
   hmpvalue <- as.data.frame(heatmapData$pvalue) 
   hmdata <- as.data.frame(heatmapData$value)  
 
@@ -2078,9 +2063,9 @@ step_28_hallmark_gsva <- function() {
 
   a=sort(rowSums(hmdata==0),decreasing = T)
   a1=a[a>median(a)]
-  #绘制通路里头基因显著的a1
+  # a1: genes significant in more pathways than the median
 
-  gmtFile="h.all.v7.4.symbols.gmt"  #gmt文件
+  gmtFile="h.all.v7.4.symbols.gmt"  # GMT file
   geneSet=GSEABase::getGmt(paste0(ParentWD,"/database/",gmtFile))
   geneSet1=geneSet[paste0("HALLMARK_",names(a1))]
   for(gs in 1:length(geneSet1)){
@@ -2097,7 +2082,7 @@ step_28_hallmark_gsva <- function() {
   corTab=data.frame()
   sameGenes=c()
 
-  pb=txtProgressBar(style=3)#加进度条
+  pb=txtProgressBar(style=3)# progress bar
   start_time=Sys.time()
   for(i in 1:length(files)){
 
@@ -2145,7 +2130,7 @@ step_28_hallmark_gsva <- function() {
   end_time=Sys.time()
   close(pb)
   run_time=end_time-start_time
-  #关闭进度条
+  # close progress bar
 
   colnames(outTab)=c("CancerType",sameGenes)
   outTab$CancerType=as.character(outTab$CancerType)
@@ -2187,7 +2172,7 @@ step_28_hallmark_gsva <- function() {
   phmdata_scaled<-t(scale(t(as.matrix(phmdata))))
   phmdata_scaled_dist=dist(phmdata_scaled)
   phmdata_scaled_dist[is.na(phmdata_scaled_dist)] <- 1
-  phm_hcluster<-hclust(phmdata_scaled_dist,method = "average")#存储hcluster之后的基因顺序以便于分页。
+  phm_hcluster<-hclust(phmdata_scaled_dist,method = "average")# gene order from average-linkage clustering, used for pagination
   plot(phm_hcluster,hang=-1,cex=.8,main="title")
 
   phmdata1=phmdata[,c(levels(significant_cohort_factor),levels(nosig_cohort_factor))]
@@ -2219,32 +2204,31 @@ step_28_hallmark_gsva <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("28.HallmarkGSVA", outdir))
-  message("[step_28_hallmark_gsva] 完成")
+  message("[step_28_hallmark_gsva] done")
 }
 
 step_23_gene_cor <- function() {
   outdir <- paste0("x12.", gene, ".Corr.Heatmap")
-  message("[step_23_gene_cor] 开始 ...")
+  message("[step_23_gene_cor] start")
   setwd(file.path(ParentWD, "23.geneCor"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 23.geneCor/panCancer23.geneCor_for_sale.R ----
 
   library(limma)
 
-  #for_sale 这个脚本只需要运行免疫抑制相关的基因，因为其他通路在GSVA那边已经分析了。
-  #geneRTtype="immunerepressor"#geneRT读取的基因列表类型
+  # for_sale: only immunosuppression-related genes are analyzed here; other pathways are covered by the GSVA step.
+  #geneRTtype="immunerepressor"  # gene list type read into geneRT
   #
   #geneRT=read.table(paste0(ParentWD,"/23.geneCor/GOBP_EPITHELIAL_TO_MESENCHYMAL_TRANSITION.txt"),sep="\t",header=F)#emt
-  #把geneRT改成想要的基因然后跑一遍
+  # set geneRT to the gene list to use and run
   #geneRT=read.table(paste0(ParentWD,"/23.geneCor/gene.txt"),sep="\t",header=F)
   #geneRT=read.table(paste0(ParentWD,"/23.geneCor/lipidmetabolism.txt"),sep="\t",header=F)#emt
   #geneRT=read.table(paste0(ParentWD,"/23.geneCor/REACTOME_UNFOLDED_PROTEIN_RESPONSE.txt"),sep="\t",header=F)#UPR
 
   #geneRTtype="immune"
-  #geneRT=read.table(paste0(ParentWD,"/23.geneCor/gene.txt"),sep="\t",header=F)#免疫相关基因
+  #geneRT=read.table(paste0(ParentWD,"/23.geneCor/gene.txt"),sep="\t",header=F)# immune-related genes
   geneRTtype="ICP (Receptor on T&NK cell)"
-  geneRT=read.table(paste0(ParentWD,"/23.geneCor/ICPreceptor.txt"),sep="\t",header=F)#免疫相关基因
+  geneRT=read.table(paste0(ParentWD,"/23.geneCor/ICPreceptor.txt"),sep="\t",header=F)# immune-related genes
 
   files=dir(paste0(ParentWD,"/data"))
   files=grep("^symbol.",files,value=T)
@@ -2254,7 +2238,7 @@ step_23_gene_cor <- function() {
   corTab=data.frame()
   sameGenes=c()
 
-  pb=txtProgressBar(style=3)#加进度条
+  pb=txtProgressBar(style=3)# progress bar
   start_time=Sys.time()
   for(i in 1:length(files)){
 
@@ -2303,7 +2287,7 @@ step_23_gene_cor <- function() {
   end_time=Sys.time()
   close(pb)
   run_time=end_time-start_time
-  #关闭进度条
+  # close progress bar
   colnames(outTab)=c("CancerType",sameGenes)
   outTab$CancerType=as.character(outTab$CancerType)
   outTab$CancerType=stringr::str_remove(outTab$CancerType,"\\.htseq_fpkm")
@@ -2445,7 +2429,7 @@ step_23_gene_cor <- function() {
   if(1==2){
     message("running selection pheatmap")
     annotation_row = read.table(paste0(ParentWD,"/23.geneCor/DNAmethylationcluster.txt"),sep="\t",row.names = 1,header = T)
-    ann_colors=list(class=c(Methyltransferases='#88CEEA',`Methyl CpG binding proteins`='#D970D5',`Methylcytosine dioxygenases`='#01C689',`Glycosylases`='#F3A462')) ##给你的分类指定一下颜色
+    ann_colors=list(class=c(Methyltransferases='#88CEEA',`Methyl CpG binding proteins`='#D970D5',`Methylcytosine dioxygenases`='#01C689',`Glycosylases`='#F3A462')) # colors for each class
     b=pheatmap(hmdata,cluster_rows = F,annotation_row = annotation_row,annotation_colors=ann_colors,cluster_cols = F,na_col = "white",border_color = "#C7D5D9",cellwidth = 10,cellheight = 10,scale = "none",color=colorRampPalette(corl)(100),display_numbers = Cs.mat)
     pdf(paste0(gene,".",geneRTtype,".geneCor.pheatmap_nonrowcluster.pdf"),width = 12,height = 15)
     print(b)
@@ -2453,16 +2437,15 @@ step_23_gene_cor <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("23.geneCor", outdir))
-  message("[step_23_gene_cor] 完成")
+  message("[step_23_gene_cor] done")
 }
 
 step_25_gsea <- function() {
   outdir <- paste0("x13.", gene, ".GSEA")
-  message("[step_25_gsea] 开始 ...")
+  message("[step_25_gsea] start")
   setwd(file.path(ParentWD, "25.GSEA"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 25.GSEA/panCancer25.GSEA_for_sale.R ----
 
   library(limma)
   library(org.Hs.eg.db)
@@ -2476,16 +2459,16 @@ step_25_gsea <- function() {
   gmtKEGG=read.gmt(paste0(ParentWD,"/25.GSEA/c2.cp.kegg.v7.1.symbols.gmt"))
   gmtGO1=gmtGO
   gmtGO1$term=gsub("GO_","",gmtGO$term)
-  gmtGO.list=gmtGO1%>%split(.$term)%>%lapply("[[",2)#用于fgsea
+  gmtGO.list=gmtGO1%>%split(.$term)%>%lapply("[[",2)# for fgsea
 
   gmtKEGG1=gmtKEGG
   gmtKEGG1$term=gsub("KEGG_","",gmtKEGG$term)
-  gmtKEGG.list=gmtKEGG1%>%split(.$term)%>%lapply("[[",2) #用于fgsea
+  gmtKEGG.list=gmtKEGG1%>%split(.$term)%>%lapply("[[",2) # for fgsea
 
 
   files=dir(paste0(ParentWD,"/data"))
   files=grep("^symbol.*tsv$",files,value=T)
-  pb=txtProgressBar(style=3)#加进度条
+  pb=txtProgressBar(style=3)# progress bar
   start_time=Sys.time()
   for(i in 1:length(files)){
 
@@ -2540,7 +2523,7 @@ step_25_gsea <- function() {
   	write.xlsx(kkTab,file=paste0(gene,".GSEA.GO.",CancerType,".xlsx"))
   	if((nrow(kkTab)==0)){next}
   	termNum=8
-           col_1<-pal_simpsons()(8)#创建了一个包含10个元素的简单色盘
+           col_1<-pal_simpsons()(8)# discrete color palette
 
 
   	if(nrow(kkTab)>=termNum){
@@ -2549,7 +2532,7 @@ step_25_gsea <- function() {
   		gseaplot=gseaplot2(kk, row.names(kkTab)[1:printNum],
   		color=col_1[1:printNum],
   		base_size =14,
-  		rel_heights=c(1,0.2,0.4),#小图相对高度
+  		rel_heights=c(1,0.2,0.4),# relative heights of the panels
   		subplots=1:3,
   		pvalue_table=F,
   		ES_geom="line"
@@ -2558,7 +2541,7 @@ step_25_gsea <- function() {
   		print(gseaplot)
   		dev.off()
 
-  	#用gsea画图	
+  	# GSEA-style plot	
 
 
       fgseaRes <-fgsea(pathways = gmtGO.list,
@@ -2592,7 +2575,7 @@ step_25_gsea <- function() {
   	gseaplot=gseaplot2(kk1, row.names(kkTab)[1:printNum],
   	color=col_1[1:printNum],
   	base_size =14,
-  	rel_heights=c(1,0.2,0.4),#小图相对高度
+  	rel_heights=c(1,0.2,0.4),# relative heights of the panels
   	subplots=1:3,
   	pvalue_table=F,
   	ES_geom="line")
@@ -2600,7 +2583,7 @@ step_25_gsea <- function() {
   	print(gseaplot)
   	dev.off()
 
-  	#用gsea画图	
+  	# GSEA-style plot	
 
 
   	fgseaRes <-fgsea(pathways = gmtKEGG.list,
@@ -2626,17 +2609,16 @@ step_25_gsea <- function() {
   run_time=end_time-start_time
   setwd(ParentWD)
   cp_report(file.path("25.GSEA", outdir))
-  message("[step_25_gsea] 完成")
+  message("[step_25_gsea] done")
 }
 
 step_29_drugsensitivity <- function() {
   assign("cohort_to_analysis", cohort_focus, envir = globalenv())
   outdir <- paste0("x29.", gene, ".drugsensitivityIC50(pRRophetic)")
-  message("[step_29_drugsensitivity] 开始 ...")
+  message("[step_29_drugsensitivity] start")
   setwd(file.path(ParentWD, "29.drugsensitivityIC50_pRRophetic"))
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 29.drugsensitivityIC50_pRRophetic/pancancer.pRRophetic.gene_for_sale.R ----
 
 
   library(limma)
@@ -2645,8 +2627,8 @@ step_29_drugsensitivity <- function() {
   library(ggplot2)
   set.seed(12345)
   pFilter=0.001 
-  allDrugs=c("A.443654", "A.770041", "ABT.263", "ABT.888", "AG.014699", "AICAR", "AKT.inhibitor.VIII", "AMG.706", "AP.24534", "AS601245", "ATRA", "AUY922", "Axitinib", "AZ628", "AZD.0530", "AZD.2281", "AZD6244", "AZD6482", "AZD7762", "AZD8055", "BAY.61.3606", "Bexarotene", "BI.2536", "BIBW2992", "Bicalutamide", "BI.D1870", "BIRB.0796", "Bleomycin", "BMS.509744", "BMS.536924", "BMS.708163", "BMS.754807", "Bortezomib", "Bosutinib", "Bryostatin.1", "BX.795", "Camptothecin", "CCT007093", "CCT018159", "CEP.701", "CGP.082996", "CGP.60474", "CHIR.99021", "CI.1040", "Cisplatin", "CMK", "Cyclopamine", "Cytarabine", "Dasatinib", "DMOG", "Docetaxel", "Doxorubicin", "EHT.1864", "Elesclomol", "Embelin", "Epothilone.B", "Erlotinib", "Etoposide", "FH535", "FTI.277", "GDC.0449", "GDC0941", "Gefitinib", "Gemcitabine", "GNF.2", "GSK269962A", "GSK.650394", "GW.441756", "GW843682X", "Imatinib", "IPA.3", "JNJ.26854165", "JNK.9L", "JNK.Inhibitor.VIII", "JW.7.52.1", "KIN001.135", "KU.55933", "Lapatinib", "Lenalidomide", "LFM.A13", "Metformin", "Methotrexate", "MG.132", "Midostaurin", "Mitomycin.C", "MK.2206", "MS.275", "Nilotinib", "NSC.87877", "NU.7441", "Nutlin.3a", "NVP.BEZ235", "NVP.TAE684", "Obatoclax.Mesylate", "OSI.906", "PAC.1", "Paclitaxel", "Parthenolide", "Pazopanib", "PD.0325901", "PD.0332991", "PD.173074", "PF.02341066", "PF.4708671", "PF.562271", "PHA.665752", "PLX4720", "Pyrimethamine", "QS11", "Rapamycin", "RDEA119", "RO.3306", "Roscovitine", "Salubrinal", "SB.216763", "SB590885", "Shikonin", "SL.0101.1", "Sorafenib", "S.Trityl.L.cysteine", "Sunitinib", "Temsirolimus", "Thapsigargin", "Tipifarnib", "TW.37", "Vinblastine", "Vinorelbine", "Vorinostat", "VX.680", "VX.702", "WH.4.023", "WO2009093972", "WZ.1.84", "X17.AAG", "X681640", "XMD8.85", "Z.LLNle.CHO", "ZM.447439")#设置药物
-  Ts=c("ACC","BLCA","BRCA","CESC","CHOL","COAD","DLBC","ESCA","GBM","HNSC","KICH","KIRC","KIRP","LAML","LGG","LIHC","LUAD","LUSC","MESO","OV","PAAD","PCPG","PRAD","READ","SARC","SKCM","STAD","TGCT","THCA","THYM","UCEC","UCS","UVM")#设置癌种
+  allDrugs=c("A.443654", "A.770041", "ABT.263", "ABT.888", "AG.014699", "AICAR", "AKT.inhibitor.VIII", "AMG.706", "AP.24534", "AS601245", "ATRA", "AUY922", "Axitinib", "AZ628", "AZD.0530", "AZD.2281", "AZD6244", "AZD6482", "AZD7762", "AZD8055", "BAY.61.3606", "Bexarotene", "BI.2536", "BIBW2992", "Bicalutamide", "BI.D1870", "BIRB.0796", "Bleomycin", "BMS.509744", "BMS.536924", "BMS.708163", "BMS.754807", "Bortezomib", "Bosutinib", "Bryostatin.1", "BX.795", "Camptothecin", "CCT007093", "CCT018159", "CEP.701", "CGP.082996", "CGP.60474", "CHIR.99021", "CI.1040", "Cisplatin", "CMK", "Cyclopamine", "Cytarabine", "Dasatinib", "DMOG", "Docetaxel", "Doxorubicin", "EHT.1864", "Elesclomol", "Embelin", "Epothilone.B", "Erlotinib", "Etoposide", "FH535", "FTI.277", "GDC.0449", "GDC0941", "Gefitinib", "Gemcitabine", "GNF.2", "GSK269962A", "GSK.650394", "GW.441756", "GW843682X", "Imatinib", "IPA.3", "JNJ.26854165", "JNK.9L", "JNK.Inhibitor.VIII", "JW.7.52.1", "KIN001.135", "KU.55933", "Lapatinib", "Lenalidomide", "LFM.A13", "Metformin", "Methotrexate", "MG.132", "Midostaurin", "Mitomycin.C", "MK.2206", "MS.275", "Nilotinib", "NSC.87877", "NU.7441", "Nutlin.3a", "NVP.BEZ235", "NVP.TAE684", "Obatoclax.Mesylate", "OSI.906", "PAC.1", "Paclitaxel", "Parthenolide", "Pazopanib", "PD.0325901", "PD.0332991", "PD.173074", "PF.02341066", "PF.4708671", "PF.562271", "PHA.665752", "PLX4720", "Pyrimethamine", "QS11", "Rapamycin", "RDEA119", "RO.3306", "Roscovitine", "Salubrinal", "SB.216763", "SB590885", "Shikonin", "SL.0101.1", "Sorafenib", "S.Trityl.L.cysteine", "Sunitinib", "Temsirolimus", "Thapsigargin", "Tipifarnib", "TW.37", "Vinblastine", "Vinorelbine", "Vorinostat", "VX.680", "VX.702", "WH.4.023", "WO2009093972", "WZ.1.84", "X17.AAG", "X681640", "XMD8.85", "Z.LLNle.CHO", "ZM.447439")# drug list
+  Ts=c("ACC","BLCA","BRCA","CESC","CHOL","COAD","DLBC","ESCA","GBM","HNSC","KICH","KIRC","KIRP","LAML","LGG","LIHC","LUAD","LUSC","MESO","OV","PAAD","PCPG","PRAD","READ","SARC","SKCM","STAD","TGCT","THCA","THYM","UCEC","UCS","UVM")# cancer types
 
 
   Ts=cohort_to_analysis
@@ -2670,7 +2652,7 @@ step_29_drugsensitivity <- function() {
   riskRT=as.matrix(riskRT)
   colnames(riskRT)=gene
   message(paste0("Analysising the correlation of ", gene, " in ",cancer))
-  pb=txtProgressBar(style=3)#加进度条
+  pb=txtProgressBar(style=3)# progress bar
   for(drug in allDrugs){
     message(paste0("Analysising the correlation of ", gene, " in ",cancer," with ", drug, "\n")) 
     setTxtProgressBar(pb,match(drug,allDrugs)/length(allDrugs))
@@ -2711,7 +2693,7 @@ step_29_drugsensitivity <- function() {
   }
   setwd(ParentWD)
   cp_report(file.path("29.drugsensitivityIC50_pRRophetic", outdir))
-  message("[step_29_drugsensitivity] 完成")
+  message("[step_29_drugsensitivity] done")
 }
 
 run_imvigor <- function() {
@@ -2719,28 +2701,27 @@ run_imvigor <- function() {
   outdir <- paste0("x33.", gene, ".IMvigor210Response")
   if (!dir.exists(outdir)) dir.create(outdir, showWarnings = FALSE)
   setwd(outdir)
-  # ---- 内联自 33.IMvigor210/IMvigor210/IMvigor210.geneResponse_for_sale.R ----
   #!/usr/bin/env Rscript
   # =====================================================================
-  # IMvigor210.geneResponse_for_sale.R —— IMvigor210 免疫治疗队列：
-  #   单基因高低表达组间客观缓解（CR/PR）比例比较
+  # IMvigor210.geneResponse_for_sale.R - IMvigor210 immunotherapy cohort:
+  #   objective response (CR/PR) rates compared between High/Low expression groups
   #
-  # 输入（位于上一级目录，即 33.IMvigor210/IMvigor210/）：
-  #   ../IMvigor210_cli.txt          临床表（Best Confirmed Overall Response）
-  #   ../IMvigor210_fpkm_symbol.txt   FPKM 表达矩阵（genes × 348 样本）
+  # Input (parent directory, 33.IMvigor210/IMvigor210/):
+  #   ../IMvigor210_cli.txt          clinical table (Best Confirmed Overall Response)
+  #   ../IMvigor210_fpkm_symbol.txt   FPKM matrix (genes x 348 samples)
   #
-  # 分析：
-  #   1. 基因表达按中位数二分（High / Low）
-  #   2. 响应分组：CR/PR（响应）vs PD/SD（非响应），排除 NE
-  #   3. 各组 CR、PR、CR+PR 比例；Fisher 精确检验比较高低组响应率
-  #   4. 二分类与四分类堆叠比例条形图
+  # Analysis:
+  #   1. median split of gene expression (High / Low)
+  #   2. response grouping: CR/PR (responder) vs PD/SD (non-responder), NE excluded
+  #   3. CR, PR, CR+PR fractions per group; Fisher exact test, High vs Low
+  #   4. stacked bar plots: binary (CR/PR vs PD/SD) and four-class (CR/PR/SD/PD)
   #
-  # 运行模式（本项目惯例）：设置全局变量 gene，setwd 至输出目录后
+  # Run mode: set global variable gene, setwd to the output directory,
   #   source("../IMvigor210.geneResponse_for_sale.R")
-  # 输出写入当前目录：
+  # Output written to the working directory:
   #   <gene>.IMvigor210.response.csv
-  #   <gene>.IMvigor210.responseBar.{pdf,png}     二分类（CR/PR vs PD/SD）
-  #   <gene>.IMvigor210.responseBar4.{pdf,png}    四分类（CR/PR/SD/PD）
+  #   <gene>.IMvigor210.responseBar.{pdf,png}     binary (CR/PR vs PD/SD)
+  #   <gene>.IMvigor210.responseBar4.{pdf,png}    four-class (CR/PR/SD/PD)
   # =====================================================================
 
   suppressPackageStartupMessages({
@@ -2748,11 +2729,11 @@ run_imvigor <- function() {
     library(ggplot2)
   })
 
-  if (!exists("gene")) stop("需要全局变量 gene（基因 symbol）")
+  if (!exists("gene")) stop("global variable gene (gene symbol) required")
   if (!file.exists("../IMvigor210_cli.txt"))
-    stop("未找到数据文件：请在 33.IMvigor210/IMvigor210/ 下的输出目录内运行")
+    stop("input file not found: run from the output directory under 33.IMvigor210/IMvigor210/")
 
-  # ---------------------------- 数据 ----------------------------
+  # ---------------------------- data ----------------------------
   cli <- read.delim("../IMvigor210_cli.txt", sep = "\t", header = TRUE, check.names = FALSE)
   resp_all <- cli[["Best Confirmed Overall Response"]]
   names(resp_all) <- rownames(cli)
@@ -2762,7 +2743,7 @@ run_imvigor <- function() {
   exp_mat <- as.matrix(exp_mat[, -1, drop = FALSE])
   exp_mat <- log2(exp_mat + 1)
 
-  if (!(gene %in% rownames(exp_mat))) stop("表达矩阵中不存在基因: ", gene)
+  if (!(gene %in% rownames(exp_mat))) stop("gene not present in the expression matrix: ", gene)
 
   gexpr <- exp_mat[gene, ]
   com <- intersect(names(gexpr), names(resp_all))
@@ -2777,9 +2758,9 @@ run_imvigor <- function() {
   df <- df[df$Response %in% c("CR", "PR", "SD", "PD"), ]
   df$Binary <- ifelse(df$Response %in% c("CR", "PR"), "CR/PR", "PD/SD")
 
-  if (nrow(df) == 0) stop("无有效响应样本")
+  if (nrow(df) == 0) stop("no samples with a valid response")
 
-  # ---------------------------- 比例与检验 ----------------------------
+  # ---------------------------- proportions and test ----------------------------
   n_by_group <- table(df$group)
   ct4 <- table(factor(df$Response, levels = c("CR", "PR", "SD", "PD")), df$group)
   ct2 <- table(df$Binary, df$group)
@@ -2806,7 +2787,7 @@ run_imvigor <- function() {
   )
   write.csv(res_tab, paste0(gene, ".IMvigor210.response.csv"), row.names = FALSE)
 
-  # ---------------------------- 作图 ----------------------------
+  # ---------------------------- plots ----------------------------
   sci_theme <- theme_classic(base_size = 11) +
     theme(axis.line = element_line(colour = "black", linewidth = 0.5),
           axis.ticks = element_line(colour = "black", linewidth = 0.5),
@@ -2846,7 +2827,7 @@ run_imvigor <- function() {
                c("CR" = "#B2182B", "PR" = "#EF8A62", "SD" = "#92C5DE", "PD" = "#2166AC"),
                paste0(gene, ".IMvigor210.responseBar4"), 5.5, 5.5)
 
-  message("IMvigor210 响应分析完成: ", gene,
+  message("IMvigor210 response analysis done: ", gene,
           " (n High = ", res_tab$n[2], ", Low = ", res_tab$n[1],
           ", CR+PR High = ", res_tab$CRPR_pct[2], "% vs Low = ", res_tab$CRPR_pct[1],
           "%, P = ", signif(p_val, 3), ")")
@@ -2856,7 +2837,7 @@ run_imvigor <- function() {
 
 
 # =====================================================================
-# 4. 主流程
+# 4. Main
 # =====================================================================
 .rd <- file.path(ParentWD, "report", gene)
 if (!dir.exists(.rd)) dir.create(.rd, recursive = TRUE, showWarnings = FALSE)
@@ -2884,7 +2865,7 @@ for (.st in .steps) {
       sig <- union(sig, tmp[length(tmp) - 1])
     }
     assign("significant_cohort", sig, envir = globalenv())
-    message("[main] 显著队列: ", paste(sig, collapse = ", "))
+    message("[main] significant cohorts: ", paste(sig, collapse = ", "))
   }
 }
 
@@ -2893,4 +2874,4 @@ if (dir.exists(file.path(ParentWD, "33.IMvigor210", "IMvigor210"))) {
            error = function(e) { message("[FAIL] IMvigor: ", conditionMessage(e)); try(setwd(ParentWD), silent = TRUE) })
 }
 
-message("======== CDC25C 泛癌全流程结束，结果见 report/", gene, "/ ========")
+message("======== pipeline finished, results in report/", gene, "/ ========")
